@@ -1,0 +1,14 @@
+{
+  "name": "library-lab4",
+  "version": "1.0.0",
+  "description": "Library Management System - Database Lab 4",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "mysql2": "^3.24.6"
+  }
+}
