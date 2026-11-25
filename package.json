@@ -1,14 +1,15 @@
 {
-  "name": "library-lab4",
+  "name": "lab5-part2-library",
   "version": "1.0.0",
-  "description": "Library Management System - Database Lab 4",
+  "description": "Library website for Database Lab 5 Part II",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "dotenv": "^18.0.9",
-    "express": "^5.3.0",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.3",
+    "express-session": "^1.19.0",
     "mysql2": "^3.24.6"
   }
 }

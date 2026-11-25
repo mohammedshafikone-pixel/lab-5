@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Library - Lab 5 Part II</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Library Management System</h1>
+    <p>Lab 5 · Part II — Complex SQL Queries</p>
+    <span id="status">Checking database connection...</span>
+  </header>
+  <main>
+    <nav>
+      <button data-page="F2.1">F2.1 Above average</button>
+      <button data-page="F2.2a">F2.2a Never borrowed books</button>
+      <button data-page="F2.2b">F2.2b Members never borrowed</button>
+      <button data-page="F2.3a">F2.3a Best in category</button>
+      <button data-page="F2.3b">F2.3b Above category average</button>
+      <button data-page="F2.4a">F2.4a Active members</button>
+      <button data-page="F2.4b">F2.4b Authors with borrowed books</button>
+      <button data-page="F2.5a">F2.5a Reviews report</button>
+      <button data-page="F2.5b">F2.5b Above average rating</button>
+      <button data-page="F2.6a">F2.6a All countries</button>
+      <button data-page="F2.6b">F2.6b Shared countries</button>
+      <button data-page="F2.6c">F2.6c Author-only countries</button>
+      <button data-page="F2.6d">F2.6d Authors and members</button>
+    </nav>
+    <section>
+      <h2 id="heading">Choose a report</h2>
+      <p id="message">Select one of the buttons to run its SQL query.</p>
+      <div class="table-wrap">
+        <table id="results"><thead></thead><tbody></tbody></table>
+      </div>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

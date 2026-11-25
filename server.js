@@ -1,333 +1,100 @@
 require('dotenv').config();
-
 const express = require('express');
 const mysql = require('mysql2/promise');
 const path = require('path');
 
 const app = express();
-
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// MySQL Connection
-const db = mysql.createPool({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    waitForConnections: true,
-    connectionLimit: 10
+const pool = mysql.createPool({
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'library_lab4',
+  waitForConnections: true,
+  connectionLimit: 10
 });
 
-// Test connection
-app.get('/api/health', async (req, res) => {
-    try {
-        await db.query('SELECT 1');
-        res.json({ message: 'MySQL Connected Successfully' });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+const queries = {
+  'F2.1': `SELECT title, price, (SELECT AVG(price) FROM BOOK) AS library_average_price
+           FROM book_details
+           WHERE price > (SELECT AVG(price) FROM BOOK)
+           ORDER BY price DESC`,
+  'F2.2a': `SELECT b.book_id, b.title, b.price FROM BOOK b
+            WHERE NOT EXISTS (SELECT 1 FROM LOAN l WHERE l.book_id = b.book_id)
+            ORDER BY b.book_id`,
+  'F2.2b': `SELECT m.member_id, m.name, m.email FROM MEMBER m
+            WHERE NOT EXISTS (SELECT 1 FROM LOAN l WHERE l.member_id = m.member_id)
+            ORDER BY m.member_id`,
+  'F2.3a': `SELECT category_name, title, price FROM book_details bd
+            WHERE price = (SELECT MAX(bd2.price) FROM book_details bd2
+                           WHERE bd2.category_id = bd.category_id)
+            ORDER BY category_name, title`,
+  'F2.3b': `SELECT category_name, title, price FROM book_details bd
+            WHERE price > (SELECT AVG(bd2.price) FROM book_details bd2
+                           WHERE bd2.category_id = bd.category_id)
+            ORDER BY category_name, price DESC`,
+  'F2.4a': `SELECT m.member_id, m.name, x.loan_count,
+                   (SELECT AVG(y.loan_count) FROM
+                     (SELECT m2.member_id, COUNT(l2.loan_id) loan_count
+                      FROM MEMBER m2 LEFT JOIN LOAN l2 ON l2.member_id=m2.member_id
+                      GROUP BY m2.member_id) y) average_loans_per_member
+            FROM MEMBER m JOIN
+              (SELECT m1.member_id, COUNT(l1.loan_id) loan_count
+               FROM MEMBER m1 LEFT JOIN LOAN l1 ON l1.member_id=m1.member_id
+               GROUP BY m1.member_id) x ON x.member_id=m.member_id
+            WHERE x.loan_count >
+              (SELECT AVG(y.loan_count) FROM
+                (SELECT m2.member_id, COUNT(l2.loan_id) loan_count
+                 FROM MEMBER m2 LEFT JOIN LOAN l2 ON l2.member_id=m2.member_id
+                 GROUP BY m2.member_id) y)
+            ORDER BY x.loan_count DESC`,
+  'F2.4b': `SELECT a.author_id, a.name, a.country FROM AUTHOR a
+            WHERE EXISTS (SELECT 1 FROM BOOK b JOIN LOAN l ON l.book_id=b.book_id
+                          WHERE b.author_id=a.author_id) ORDER BY a.name`,
+  'F2.5a': `SELECT b.book_id, b.title, COUNT(r.review_id) number_of_reviews,
+                   COALESCE(AVG(r.rating),0) average_rating,
+                   CASE WHEN COUNT(r.review_id)=0 THEN 'No review'
+                        WHEN AVG(r.rating)>=4.5 THEN 'Excellent'
+                        WHEN AVG(r.rating)>=3.5 THEN 'Good'
+                        ELSE 'Fair' END review_label
+            FROM BOOK b LEFT JOIN REVIEW r ON r.book_id=b.book_id
+            GROUP BY b.book_id,b.title ORDER BY b.book_id`,
+  'F2.5b': `SELECT b.book_id,b.title,AVG(r.rating) average_rating
+            FROM BOOK b JOIN REVIEW r ON r.book_id=b.book_id
+            GROUP BY b.book_id,b.title
+            HAVING AVG(r.rating)>(SELECT AVG(r2.rating) FROM REVIEW r2)
+            ORDER BY average_rating DESC`,
+  'F2.6a': `SELECT country FROM AUTHOR UNION SELECT country FROM PUBLISHER ORDER BY country`,
+  'F2.6b': `SELECT country FROM AUTHOR INTERSECT SELECT country FROM PUBLISHER ORDER BY country`,
+  'F2.6c': `SELECT country FROM AUTHOR EXCEPT SELECT country FROM PUBLISHER ORDER BY country`,
+  'F2.6d': `SELECT name, person_type FROM
+              (SELECT a.name, 'Author' person_type FROM AUTHOR a
+               UNION ALL SELECT m.name, 'Member' person_type FROM MEMBER m) people
+            ORDER BY name, person_type`
+};
+
+app.get('/api/:page', async (req, res) => {
+  const sql = queries[req.params.page];
+  if (!sql) return res.status(404).json({ error: 'Unknown page' });
+  try {
+    const [rows] = await pool.query(sql);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// Get Categories
-app.get('/api/categories', async (req, res) => {
-    try {
-        const [rows] = await db.query(
-            'SELECT * FROM CATEGORY ORDER BY name'
-        );
-
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+app.get('/api/health', async (_req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'connected', database: process.env.DB_NAME || 'library_lab4' });
+  } catch (err) {
+    res.status(500).json({ status: 'error', error: err.message });
+  }
 });
 
-// F2.1 Search Books (Prepared Statements)
-app.get('/api/search', async (req, res) => {
-    try {
-        const {
-            keyword = '',
-            minPrice = 0,
-            maxPrice = 999999,
-            categoryId = 'all'
-        } = req.query;
-
-        const min = Number(minPrice);
-        const max = Number(maxPrice);
-
-        if (!Number.isFinite(min) ||
-            !Number.isFinite(max) ||
-            min > max) {
-            return res.status(400).json({
-                error: 'Invalid price range'
-            });
-        }
-
-        let sql = `
-            SELECT
-                b.book_id,
-                b.title,
-                b.price,
-                a.name AS author,
-                p.name AS publisher,
-                c.name AS category
-            FROM BOOK b
-            JOIN AUTHOR a ON b.author_id = a.author_id
-            JOIN PUBLISHER p ON b.publisher_id = p.publisher_id
-            JOIN CATEGORY c ON b.category_id = c.category_id
-            WHERE b.title LIKE ?
-            AND b.price BETWEEN ? AND ?
-        `;
-
-        const values = [
-            `%${keyword}%`,
-            min,
-            max
-        ];
-
-        if (categoryId !== 'all') {
-            sql += ' AND b.category_id = ?';
-            values.push(Number(categoryId));
-        }
-
-        sql += ' ORDER BY b.price ASC';
-
-        const [rows] = await db.execute(sql, values);
-
-        res.json(rows);
-
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// F2.2 Catalogue
-app.get('/api/catalogue', async (req, res) => {
-    try {
-        const [rows] = await db.query(`
-            SELECT
-                b.book_id,
-                b.title,
-                b.price,
-                b.publish_year,
-                a.name AS author,
-                p.name AS publisher,
-                c.name AS category
-            FROM BOOK b
-            JOIN AUTHOR a ON b.author_id = a.author_id
-            JOIN PUBLISHER p ON b.publisher_id = p.publisher_id
-            JOIN CATEGORY c ON b.category_id = c.category_id
-            ORDER BY b.title
-        `);
-
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// F2.3 (a) Category Reports
-app.get('/api/reports/categories', async (req, res) => {
-    try {
-        const [rows] = await db.query(`
-            SELECT
-                c.name AS category,
-                COUNT(b.book_id) AS total_books,
-                ROUND(AVG(b.price), 2) AS average_price
-            FROM CATEGORY c
-            LEFT JOIN BOOK b
-            ON c.category_id = b.category_id
-            GROUP BY c.category_id, c.name
-        `);
-
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// F2.3 (b) Authors with at least 2 books
-app.get('/api/reports/authors', async (req, res) => {
-    try {
-        const [rows] = await db.query(`
-            SELECT
-                a.name,
-                COUNT(b.book_id) AS total_books
-            FROM AUTHOR a
-            JOIN BOOK b
-            ON a.author_id = b.author_id
-            GROUP BY a.author_id, a.name
-            HAVING COUNT(b.book_id) >= 2
-        `);
-
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// F2.3 (c) Library Price Statistics
-app.get('/api/reports/prices', async (req, res) => {
-    try {
-        const [rows] = await db.query(`
-            SELECT
-                SUM(price) AS total_price,
-                MIN(price) AS minimum_price,
-                MAX(price) AS maximum_price
-            FROM BOOK
-        `);
-
-        res.json(rows[0]);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// F2.4 (a) Unreturned Loans
-app.get('/api/loans/active', async (req, res) => {
-    try {
-        const [rows] = await db.query(`
-            SELECT
-                l.loan_id,
-                b.title,
-                m.name AS member,
-                l.loan_date
-            FROM LOAN l
-            JOIN BOOK b ON l.book_id = b.book_id
-            JOIN MEMBER m ON l.member_id = m.member_id
-            WHERE l.return_date IS NULL
-        `);
-
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// F2.4 (b) Members who never borrowed
-app.get('/api/loans/no-members', async (req, res) => {
-    try {
-        const [rows] = await db.query(`
-            SELECT m.*
-            FROM MEMBER m
-            LEFT JOIN LOAN l
-            ON m.member_id = l.member_id
-            WHERE l.loan_id IS NULL
-        `);
-
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// F2.4 (c) Books never borrowed
-app.get('/api/loans/no-books', async (req, res) => {
-    try {
-        const [rows] = await db.query(`
-            SELECT b.*
-            FROM BOOK b
-            LEFT JOIN LOAN l
-            ON b.book_id = l.book_id
-            WHERE l.loan_id IS NULL
-        `);
-
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// F2.5 (a) Top 3 Most Borrowed Books
-app.get('/api/most-borrowed/books', async (req, res) => {
-    try {
-        const [rows] = await db.query(`
-            SELECT
-                b.title,
-                COUNT(l.loan_id) AS total_loans
-            FROM BOOK b
-            JOIN LOAN l
-            ON b.book_id = l.book_id
-            GROUP BY b.book_id, b.title
-            ORDER BY total_loans DESC
-            LIMIT 3
-        `);
-
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// F2.5 (b) Member with most loans
-app.get('/api/most-borrowed/members', async (req, res) => {
-    try {
-        const [rows] = await db.query(`
-            SELECT
-                m.name,
-                COUNT(l.loan_id) AS total_loans
-            FROM MEMBER m
-            JOIN LOAN l
-            ON m.member_id = l.member_id
-            GROUP BY m.member_id, m.name
-            ORDER BY total_loans DESC
-            LIMIT 1
-        `);
-
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// F2.6 (a) All Authors including authors with 0 books
-app.get('/api/authors', async (req, res) => {
-    try {
-        const [rows] = await db.query(`
-            SELECT
-                a.author_id,
-                a.name,
-                a.country,
-                COUNT(b.book_id) AS total_books
-            FROM AUTHOR a
-            LEFT JOIN BOOK b
-            ON a.author_id = b.author_id
-            GROUP BY a.author_id, a.name, a.country
-            ORDER BY a.name
-        `);
-
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// F2.6 (b) Author and Publisher from same country
-app.get('/api/authors/same-country', async (req, res) => {
-    try {
-        const [rows] = await db.query(`
-            SELECT
-                b.title,
-                a.name AS author,
-                p.name AS publisher,
-                a.country
-            FROM BOOK b
-            JOIN AUTHOR a
-            ON b.author_id = a.author_id
-            JOIN PUBLISHER p
-            ON b.publisher_id = p.publisher_id
-            WHERE a.country = p.country
-        `);
-
-        res.json(rows);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// Start Server
 const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, () => {
-    console.log(`Library website running at http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`Lab 5 Part II website running at http://localhost:${PORT}`));
